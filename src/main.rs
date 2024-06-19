@@ -53,10 +53,6 @@ fn main() {
 
     debug!("scripts initialized {:?}", &scripts_to_run);
 
-    if !opts.greppable && !opts.accessible {
-        println!("[>] printing opening");
-    }
-
     let ips: Vec<IpAddr> = parse_addresses(&opts);
 
     if ips.is_empty() {
