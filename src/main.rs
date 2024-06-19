@@ -7,9 +7,7 @@ use rustscan::input::{self, Config, Opts, ScriptsRequired};
 use rustscan::port_strategy::PortStrategy;
 use rustscan::scanner::Scanner;
 use rustscan::scripts::{init_scripts, Script, ScriptFile};
-use rustscan::{detail, funny_opening, output, warning};
 
-use colorful::{Color, Colorful};
 use futures::executor::block_on;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -43,34 +41,26 @@ fn main() {
     let config = Config::read(opts.config_path.clone());
     opts.merge(&config);
 
-    debug!("Main() `opts` arguments are {:?}", opts);
+    debug!("main() `opts` arguments are {:?}", opts);
 
     let scripts_to_run: Vec<ScriptFile> = match init_scripts(opts.scripts) {
         Ok(scripts_to_run) => scripts_to_run,
         Err(e) => {
-            warning!(
-                format!("Initiating scripts failed!\n{e}"),
-                opts.greppable,
-                opts.accessible
-            );
+            eprintln!("[>] error initializing scripts: {}", e);
             std::process::exit(1);
         }
     };
 
-    debug!("Scripts initialized {:?}", &scripts_to_run);
+    debug!("scripts initialized {:?}", &scripts_to_run);
 
     if !opts.greppable && !opts.accessible {
-        print_opening(&opts);
+        println!("[>] printing opening");
     }
 
     let ips: Vec<IpAddr> = parse_addresses(&opts);
 
     if ips.is_empty() {
-        warning!(
-            "No IPs could be resolved, aborting scan.",
-            opts.greppable,
-            opts.accessible
-        );
+        eprintln!("[>] no IPs could be resolved, aborting scan.");
         std::process::exit(1);
     }
 
@@ -80,9 +70,6 @@ fn main() {
     #[cfg(not(unix))]
     let batch_size: u16 = AVERAGE_BATCH_SIZE;
 
-    // Added by wasuaje - 01/26/2024:
-    // exclude_ports  is an exclusion port list
-    //
     let scanner = Scanner::new(
         &ips,
         batch_size,
@@ -93,7 +80,7 @@ fn main() {
         opts.accessible,
         opts.exclude_ports.unwrap_or_default(),
     );
-    debug!("Scanner finished building: {:?}", scanner);
+    debug!("scanner finished building: {:?}", scanner);
 
     let mut portscan_bench = NamedTimer::start("Portscan");
     let scan_result = block_on(scanner.run());
@@ -114,16 +101,13 @@ fn main() {
             continue;
         }
 
-        // If we got here it means the IP was not found within the HashMap, this
-        // means the scan couldn't find any open ports for it.
-
-        let x = format!("Looks like I didn't find any open ports for {:?}. This is usually caused by a high batch size.
-        \n*I used {} batch size, consider lowering it with {} or a comfortable number for your system.
-        \n Alternatively, increase the timeout if your ping is high. Rustscan -t 2000 for 2000 milliseconds (2s) timeout.\n",
+        let x = format!("looks like i didn't find any open ports for {:?}. this is usually caused by a high batch size.
+        \n*i used {} batch size, consider lowering it with {} or a comfortable number for your system.
+        \n alternatively, increase the timeout if your ping is high. rustscan -t 2000 for 2000 milliseconds (2s) timeout.\n",
         ip,
         opts.batch_size,
         "'rustscan -b <batch_size> -a <ip address>'");
-        warning!(x, opts.greppable, opts.accessible);
+        eprintln!("[>] {}", x);
     }
 
     let mut script_bench = NamedTimer::start("Scripts");
@@ -135,32 +119,28 @@ fn main() {
 
         // if option scripts is none, no script will be spawned
         if opts.greppable || opts.scripts == ScriptsRequired::None {
-            println!("{} -> [{}]", &ip, ports_str);
+            println!("[>] {} -> [{}]", &ip, ports_str);
             continue;
         }
-        detail!("Starting Script(s)", opts.greppable, opts.accessible);
+        debug!("starting script(s)");
 
-        // Run all the scripts we found and parsed based on the script config file tags field.
+        // run all the scripts we found and parsed based on the script config file tags field.
         for mut script_f in scripts_to_run.clone() {
-            // This part allows us to add commandline arguments to the Script call_format, appending them to the end of the command.
+            // this part allows us to add commandline arguments to the script call_format, appending them to the end of the command.
             if !opts.command.is_empty() {
                 let user_extra_args = &opts.command.join(" ");
-                debug!("Extra args vec {:?}", user_extra_args);
+                debug!("extra args vec {:?}", user_extra_args);
                 if script_f.call_format.is_some() {
                     let mut call_f = script_f.call_format.unwrap();
                     call_f.push(' ');
                     call_f.push_str(user_extra_args);
-                    output!(
-                        format!("Running script {:?} on ip {}\nDepending on the complexity of the script, results may take some time to appear.", call_f, &ip),
-                        opts.greppable,
-                        opts.accessible
-                    );
-                    debug!("Call format {}", call_f);
+                    println!("[>] running script {:?} on ip {}\ndepending on the complexity of the script, results may take some time to appear.", call_f, &ip);
+                    debug!("call format {}", call_f);
                     script_f.call_format = Some(call_f);
                 }
             }
 
-            // Building the script with the arguments from the ScriptFile, and ip-ports.
+            // building the script with the arguments from the scriptfile, and ip-ports.
             let script = Script::build(
                 script_f.path,
                 *ip,
@@ -172,57 +152,21 @@ fn main() {
             );
             match script.run() {
                 Ok(script_result) => {
-                    detail!(script_result.to_string(), opts.greppable, opts.accessible);
+                    println!("[>] {}", script_result);
                 }
                 Err(e) => {
-                    warning!(&format!("Error {e}"), opts.greppable, opts.accessible);
+                    eprintln!("[>] error running script: {}", e);
                 }
             }
         }
     }
 
-    // To use the runtime benchmark, run the process as: RUST_LOG=info ./rustscan
     script_bench.end();
     benchmarks.push(script_bench);
     rustscan_bench.end();
     benchmarks.push(rustscan_bench);
-    debug!("Benchmarks raw {:?}", benchmarks);
-    info!("{}", benchmarks.summary());
-}
-
-/// Prints the opening title of RustScan
-#[allow(clippy::items_after_statements, clippy::needless_raw_string_hashes)]
-fn print_opening(opts: &Opts) {
-    debug!("Printing opening");
-    let s = format!(
-        "{}\n{}\n{}\n{}\n{}",
-        r#".----. .-. .-. .----..---.  .----. .---.   .--.  .-. .-."#,
-        r#"| {}  }| { } |{ {__ {_   _}{ {__  /  ___} / {} \ |  `| |"#,
-        r#"| .-. \| {_} |.-._} } | |  .-._} }\     }/  /\  \| |\  |"#,
-        r#"`-' `-'`-----'`----'  `-'  `----'  `---' `-'  `-'`-' `-'"#,
-        r#"The Modern Day Port Scanner."#
-    );
-    println!("{}", s.gradient(Color::Green).bold());
-    let info = format!(
-        "{}\n{}\n{}\n{}",
-        r#"________________________________________"#,
-        r#": http://discord.skerritt.blog         :"#,
-        r#": https://github.com/RustScan/RustScan :"#,
-        r#" --------------------------------------"#
-    );
-    println!("{}", info.gradient(Color::Yellow).bold());
-    funny_opening!();
-
-    let config_path = opts
-        .config_path
-        .clone()
-        .unwrap_or_else(input::default_config_path);
-
-    detail!(
-        format!("The config file is expected to be at {config_path:?}"),
-        opts.greppable,
-        opts.accessible
-    );
+    debug!("benchmarks raw {:?}", benchmarks);
+    println!("[>] {}", benchmarks.summary());
 }
 
 #[cfg(unix)]
@@ -231,17 +175,9 @@ fn adjust_ulimit_size(opts: &Opts) -> u64 {
 
     if let Some(limit) = opts.ulimit {
         if Resource::NOFILE.set(limit, limit).is_ok() {
-            detail!(
-                format!("Automatically increasing ulimit value to {limit}."),
-                opts.greppable,
-                opts.accessible
-            );
+            println!("[>] automatically increasing ulimit value to {}", limit);
         } else {
-            warning!(
-                "ERROR. Failed to set ulimit value.",
-                opts.greppable,
-                opts.accessible
-            );
+            eprintln!("[>] failed to set ulimit value.");
         }
     }
 
@@ -255,46 +191,43 @@ fn infer_batch_size(opts: &Opts, ulimit: u64) -> u16 {
 
     let mut batch_size: u64 = opts.batch_size.into();
 
-    // Adjust the batch size when the ulimit value is lower than the desired batch size
+    // adjust the batch size when the ulimit value is lower than the desired batch size
     if ulimit < batch_size {
-        warning!("File limit is lower than default batch size. Consider upping with --ulimit. May cause harm to sensitive servers",
-            opts.greppable, opts.accessible
-        );
+        eprintln!("[>] file limit is lower than default batch size. consider upping with --ulimit. may cause harm to sensitive servers");
 
-        // When the OS supports high file limits like 8000, but the user
+        // when the os supports high file limits like 8000, but the user
         // selected a batch size higher than this we should reduce it to
         // a lower number.
         if ulimit < AVERAGE_BATCH_SIZE.into() {
             // ulimit is smaller than aveage batch size
             // user must have very small ulimit
             // decrease batch size to half of ulimit
-            warning!("Your file limit is very small, which negatively impacts RustScan's speed. Use the Docker image, or up the Ulimit with '--ulimit 5000'. ", opts.greppable, opts.accessible);
-            info!("Halving batch_size because ulimit is smaller than average batch size");
+            eprintln!("[>] your file limit is very small, which negatively impacts rustscan's speed. use the docker image, or up the ulimit with '--ulimit 5000'. ");
+            println!("[>] halving batch_size because ulimit is smaller than average batch size");
             batch_size = ulimit / 2;
         } else if ulimit > DEFAULT_FILE_DESCRIPTORS_LIMIT {
-            info!("Batch size is now average batch size");
+            println!("[>] batch size is now average batch size");
             batch_size = AVERAGE_BATCH_SIZE.into();
         } else {
             batch_size = ulimit - 100;
         }
     }
-    // When the ulimit is higher than the batch size let the user know that the
+    // when the ulimit is higher than the batch size let the user know that the
     // batch size can be increased unless they specified the ulimit themselves.
     else if ulimit + 2 > batch_size && (opts.ulimit.is_none()) {
-        detail!(format!("File limit higher than batch size. Can increase speed by increasing batch size '-b {}'.", ulimit - 100),
-        opts.greppable, opts.accessible);
+        println!("[>] file limit higher than batch size. can increase speed by increasing batch size '-b {}'.", ulimit - 100);
     }
 
     batch_size
         .try_into()
-        .expect("Couldn't fit the batch size into a u16.")
+        .expect("couldn't fit the batch size into a u16.")
 }
 
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
     use super::{adjust_ulimit_size, infer_batch_size};
-    use super::{print_opening, Opts};
+    use super::{Opts};
 
     #[test]
     #[cfg(unix)]
@@ -313,7 +246,7 @@ mod tests {
         opts.batch_size = 50_000;
         let batch_size = infer_batch_size(&opts, 9_000);
 
-        assert!(batch_size == 3_000);
+        assert_eq!(batch_size, 3_000);
     }
     #[test]
     #[cfg(unix)]
@@ -324,7 +257,7 @@ mod tests {
         opts.batch_size = 50_000;
         let batch_size = infer_batch_size(&opts, 5_000);
 
-        assert!(batch_size == 4_900);
+        assert_eq!(batch_size, 4_900);
     }
     #[test]
     #[cfg(unix)]
@@ -335,7 +268,7 @@ mod tests {
         opts.ulimit = Some(2_000);
         let batch_size = adjust_ulimit_size(&opts);
 
-        assert!(batch_size == 2_000);
+        assert_eq!(batch_size, 2_000);
     }
 
     #[test]
@@ -347,14 +280,6 @@ mod tests {
 
         let batch_size = infer_batch_size(&opts, 1_000_000);
 
-        assert!(batch_size == opts.batch_size);
-    }
-
-    #[test]
-    fn test_print_opening_no_panic() {
-        let mut opts = Opts::default();
-        opts.ulimit = Some(2_000);
-        // print opening should not panic
-        print_opening(&opts);
+        assert_eq!(batch_size, opts.batch_size);
     }
 }
